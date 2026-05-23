@@ -56,8 +56,8 @@ with st.sidebar:
 
     st.divider()
     st.subheader("解析設定")
-    frame_count = st.slider("抽出フレーム数", min_value=3, max_value=20, value=10,
-                            help="多いほど精度が上がるが時間がかかる。10分動画なら10枚推奨")
+    frame_count = st.slider("抽出フレーム数", min_value=3, max_value=5, value=5,
+                            help="Groq Vision APIの仕様上、最大5枚")
 
     st.divider()
     st.subheader("音声設定")
