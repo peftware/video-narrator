@@ -40,7 +40,10 @@ VOICE_OPTIONS = {
     "Daichi（男性・若い）":       "ja-JP-DaichiNeural",
 }
 
-groq_api_key = st.secrets.get("GROQ_API_KEY") if hasattr(st, "secrets") else None
+try:
+    groq_api_key = st.secrets.get("GROQ_API_KEY")
+except Exception:
+    groq_api_key = None
 groq_api_key = groq_api_key or os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=groq_api_key)
 
