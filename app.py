@@ -207,8 +207,8 @@ st.header("Step 1: 動画をアップロード")
 
 uploaded_file = st.file_uploader(
     "MP4ファイルを選択してください",
-    type=["mp4"],
-    help="サイズ制限なし（フレーム抽出方式）"
+    type=["mp4", "mov", "m4v"],
+    help="サイズ制限なし（フレーム抽出方式）。iPhone動画（.mov）対応"
 )
 
 if uploaded_file is not None:
