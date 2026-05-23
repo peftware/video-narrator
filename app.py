@@ -245,13 +245,28 @@ def generate_ass(segments: list[str], total_duration: float,
                  font: str = "", bold: bool = False,
                  text_color: str = "#FFFFFF", text_opacity: int = 100,
                  bg_color: str = "#000000", bg_opacity: int = 20) -> str:
-    """ASS形式の字幕ファイルを生成"""
     if not font:
         font = list(get_font_options().values())[0]
     bold_flag = -1 if bold else 0
-    primary  = hex_to_ass(text_color, text_opacity)
-    backclr  = hex_to_ass(bg_color, bg_opacity)
     seg_dur = total_duration / max(len(segments), 1)
+
+    def to_bgr(hex_color: str) -> str:
+        h = hex_color.lstrip("#")
+        return f"{h[4:6]}{h[2:4]}{h[0:2]}"
+
+    def to_alpha(opacity: int) -> str:
+        return f"{int((100 - opacity) / 100 * 255):02X}"
+
+    t_bgr   = to_bgr(text_color)
+    t_alpha = to_alpha(text_opacity)
+    b_bgr   = to_bgr(bg_color)
+    b_alpha = to_alpha(bg_opacity)
+
+    # inline override tags applied per-line so alpha actually takes effect in libass
+    override = (
+        f"{{\\1c&H{t_bgr}&\\1a&H{t_alpha}&"
+        f"\\4c&H{b_bgr}&\\4a&H{b_alpha}&}}"
+    )
 
     def fmt(sec: float) -> str:
         h = int(sec // 3600)
@@ -262,10 +277,11 @@ def generate_ass(segments: list[str], total_duration: float,
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
+        "WrapStyle: 0",
         "",
         "[V4+ Styles]",
-        "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV",
-        f"Style: Default,{font},28,{primary},&H00000000,{backclr},{bold_flag},3,2,0,2,20,20,30",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Default,{font},28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,{bold_flag},0,0,0,100,100,0,0,3,10,0,2,20,20,30,1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -273,7 +289,7 @@ def generate_ass(segments: list[str], total_duration: float,
     for i, seg in enumerate(segments):
         start = fmt(i * seg_dur)
         end   = fmt((i + 1) * seg_dur)
-        lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{seg}")
+        lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{override}{seg}")
 
     return "\n".join(lines)
 
