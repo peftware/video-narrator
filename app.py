@@ -50,6 +50,19 @@ groq_client = Groq(api_key=groq_api_key)
 st.set_page_config(page_title="動画ナレーター自動生成", layout="centered")
 st.title("動画ナレーター自動生成")
 
+st.markdown("""
+<style>
+button[kind="secondary"] {
+    background-color: #1976d2 !important;
+    color: white !important;
+    border: none !important;
+}
+button[kind="secondary"]:hover {
+    background-color: #1565c0 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # 音声選択をセッション状態で管理
 if "selected_voice_name" not in st.session_state:
     st.session_state["selected_voice_name"] = list(VOICE_OPTIONS.keys())[0]
@@ -356,7 +369,13 @@ if uploaded_file is not None:
         - ファイル名: {uploaded_file.name}
         - サイズ: {uploaded_file.size / 1024 / 1024:.1f} MB
         """)
-        analyze_btn = st.button("ナレーションを生成する", type="primary")
+        analyze_btn = st.button("ナレーションを生成する", type="primary", use_container_width=True)
+        manual_btn  = st.button("ナレーションを自分で構成する", use_container_width=True)
+
+    if manual_btn:
+        st.session_state["narrations"] = {"自由入力": ""}
+        st.session_state.pop("video_analysis", None)
+        st.rerun()
 
     if analyze_btn:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -410,7 +429,11 @@ if uploaded_file is not None:
 
         narrations = st.session_state["narrations"]
         if narrations:
-            selected_style = st.radio("スタイルを選択", list(narrations.keys()))
+            style_keys = list(narrations.keys())
+            if len(style_keys) == 1:
+                selected_style = style_keys[0]
+            else:
+                selected_style = st.radio("スタイルを選択", style_keys)
 
             # 編集内容をセッション状態に保持
             edit_key = f"edited_{selected_style}"
