@@ -188,18 +188,64 @@ def text_to_speech(text: str, voice: str, output_path: str):
     thread.join()
 
 
-def merge_audio_video(video_path: str, audio_path: str, output_path: str):
-    result = subprocess.run([
-        FFMPEG,
-        "-i", video_path,
-        "-i", audio_path,
-        "-c:v", "copy",
-        "-c:a", "aac",
-        "-map", "0:v:0",
-        "-map", "1:a:0",
-        "-shortest",
-        output_path, "-y"
-    ], capture_output=True, text=True)
+def get_font_path() -> str | None:
+    if platform.system() == "Windows":
+        candidates = [
+            r"C:\Windows\Fonts\meiryo.ttc",
+            r"C:\Windows\Fonts\msgothic.ttc",
+            r"C:\Windows\Fonts\YuGothR.ttc",
+        ]
+    else:
+        candidates = [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        ]
+    return next((p for p in candidates if os.path.exists(p)), None)
+
+
+def wrap_text(text: str, chars_per_line: int = 18) -> str:
+    """テキストを指定文字数で折り返す（最大6行）"""
+    lines = []
+    for paragraph in text.split("\n"):
+        paragraph = paragraph.strip()
+        while len(paragraph) > chars_per_line:
+            lines.append(paragraph[:chars_per_line])
+            paragraph = paragraph[chars_per_line:]
+        if paragraph:
+            lines.append(paragraph)
+    return "\n".join(lines[:6])
+
+
+def merge_audio_video(video_path: str, audio_path: str, output_path: str,
+                      subtitle_text: str = ""):
+    font_path = get_font_path()
+    vf_filters = []
+
+    if subtitle_text and font_path:
+        # テキストをファイルに書き出してFFmpegに渡す（文字エスケープ回避）
+        text_file = output_path + ".txt"
+        with open(text_file, "w", encoding="utf-8") as f:
+            f.write(wrap_text(subtitle_text))
+
+        escaped_font = font_path.replace("\\", "/").replace(":", "\\:")
+        vf_filters.append(
+            f"drawtext=fontfile='{escaped_font}'"
+            f":textfile='{text_file}'"
+            f":fontsize=28:fontcolor=white"
+            f":box=1:boxcolor=black@0.6:boxborderw=8"
+            f":x=(w-text_w)/2:y=h-text_h-40"
+            f":line_spacing=6"
+        )
+
+    cmd = [FFMPEG, "-i", video_path, "-i", audio_path]
+    if vf_filters:
+        cmd += ["-vf", ",".join(vf_filters), "-c:a", "aac"]
+    else:
+        cmd += ["-c:v", "copy", "-c:a", "aac"]
+    cmd += ["-map", "0:v:0", "-map", "1:a:0", "-shortest", output_path, "-y"]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"FFmpegエラー:\n{result.stderr}")
 
@@ -317,6 +363,8 @@ if uploaded_file is not None:
             st.session_state["selected_voice_name"] = step3_voice
             voice = VOICE_OPTIONS[step3_voice]
 
+            show_subtitle = st.checkbox("字幕を表示する（テキストを動画に焼き込む）")
+
             if st.button("この内容で動画を生成する", type="primary"):
                 with tempfile.TemporaryDirectory() as out_dir:
                     orig_video = os.path.join(out_dir, "input.mp4")
@@ -330,7 +378,8 @@ if uploaded_file is not None:
                     output_path = os.path.join(out_dir, "output.mp4")
                     with st.spinner("FFmpegで動画を合成中..."):
                         try:
-                            merge_audio_video(orig_video, audio_path, output_path)
+                            subtitle = edited_text if show_subtitle else ""
+                            merge_audio_video(orig_video, audio_path, output_path, subtitle)
                         except RuntimeError as e:
                             st.error(str(e))
                             st.stop()
