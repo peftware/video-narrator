@@ -206,7 +206,7 @@ def merge_audio_video(video_path: str, audio_path: str, output_path: str):
 st.header("Step 1: 動画をアップロード")
 
 uploaded_file = st.file_uploader(
-    "MP4ファイルを選択してください",
+    "動画ファイルを選択してください（MP4・MOV・M4V対応）",
     type=["mp4", "mov", "m4v"],
     help="サイズ制限なし（フレーム抽出方式）。iPhone動画（.mov）対応"
 )
