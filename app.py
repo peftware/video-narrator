@@ -47,6 +47,10 @@ groq_client = Groq(api_key=groq_api_key)
 st.set_page_config(page_title="動画ナレーター自動生成", layout="centered")
 st.title("動画ナレーター自動生成")
 
+# 音声選択をセッション状態で管理
+if "selected_voice_name" not in st.session_state:
+    st.session_state["selected_voice_name"] = list(VOICE_OPTIONS.keys())[0]
+
 # --- 設定（折りたたみ） ---
 with st.expander("設定"):
     st.write("Groq API:", "✅" if groq_api_key else "❌")
@@ -54,8 +58,14 @@ with st.expander("設定"):
     st.divider()
     frame_count = st.slider("抽出フレーム数", min_value=3, max_value=5, value=5,
                             help="Groq Vision APIの仕様上、最大5枚")
-    voice_name = st.selectbox("ナレーター音声", list(VOICE_OPTIONS.keys()))
-    voice = VOICE_OPTIONS[voice_name]
+    voice_keys = list(VOICE_OPTIONS.keys())
+    setting_voice = st.selectbox(
+        "ナレーター音声",
+        voice_keys,
+        index=voice_keys.index(st.session_state["selected_voice_name"]),
+        key="voice_setting"
+    )
+    st.session_state["selected_voice_name"] = setting_voice
 
 
 # --- ユーティリティ関数 ---
@@ -279,17 +289,33 @@ if uploaded_file is not None:
         narrations = st.session_state["narrations"]
         if narrations:
             selected_style = st.radio("スタイルを選択", list(narrations.keys()))
+
+            # 編集内容をセッション状態に保持
+            edit_key = f"edited_{selected_style}"
+            if edit_key not in st.session_state:
+                st.session_state[edit_key] = narrations.get(selected_style, "")
+
             edited_text = st.text_area(
                 "ナレーション（自由に編集できます）",
-                narrations.get(selected_style, ""),
+                st.session_state[edit_key],
                 height=200,
-                key=f"edit_{selected_style}"
+                key=f"edit_{selected_style}",
+                on_change=lambda: st.session_state.update(
+                    {edit_key: st.session_state[f"edit_{selected_style}"]}
+                )
             )
 
             st.divider()
             st.header("Step 3: 音声合成＆動画書き出し")
-            voice_name = st.selectbox("ナレーター音声", list(VOICE_OPTIONS.keys()), key="voice_step3")
-            voice = VOICE_OPTIONS[voice_name]
+            voice_keys = list(VOICE_OPTIONS.keys())
+            step3_voice = st.selectbox(
+                "ナレーター音声",
+                voice_keys,
+                index=voice_keys.index(st.session_state["selected_voice_name"]),
+                key="voice_step3"
+            )
+            st.session_state["selected_voice_name"] = step3_voice
+            voice = VOICE_OPTIONS[step3_voice]
 
             if st.button("この内容で動画を生成する", type="primary"):
                 with tempfile.TemporaryDirectory() as out_dir:
