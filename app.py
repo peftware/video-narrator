@@ -191,55 +191,112 @@ def text_to_speech(text: str, voice: str, output_path: str):
     thread.join()
 
 
-def get_font_path() -> str | None:
-    if platform.system() == "Windows":
-        candidates = [
-            r"C:\Windows\Fonts\meiryo.ttc",
-            r"C:\Windows\Fonts\msgothic.ttc",
-            r"C:\Windows\Fonts\YuGothR.ttc",
-        ]
-    else:
-        candidates = [
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        ]
-    return next((p for p in candidates if os.path.exists(p)), None)
+WINDOWS_FONTS = {
+    "メイリオ（丸ゴシック）":  "Meiryo",
+    "游ゴシック（細め）":      "Yu Gothic",
+    "游明朝（明朝体）":        "Yu Mincho",
+    "ＭＳ ゴシック（等幅）":   "MS Gothic",
+}
+LINUX_FONTS = {
+    "Noto Sans CJK（標準）":   "Noto Sans CJK JP",
+    "Noto Serif CJK（明朝）":  "Noto Serif CJK JP",
+}
+
+def get_font_options() -> dict:
+    return WINDOWS_FONTS if platform.system() == "Windows" else LINUX_FONTS
 
 
-def wrap_text(text: str, chars_per_line: int = 18) -> str:
-    """テキストを指定文字数で折り返す（最大6行）"""
-    lines = []
-    for paragraph in text.split("\n"):
-        paragraph = paragraph.strip()
-        while len(paragraph) > chars_per_line:
-            lines.append(paragraph[:chars_per_line])
-            paragraph = paragraph[chars_per_line:]
-        if paragraph:
-            lines.append(paragraph)
-    return "\n".join(lines[:6])
+def get_audio_duration(audio_path: str) -> float:
+    result = subprocess.run(
+        [FFPROBE, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+        capture_output=True, text=True
+    )
+    return float(result.stdout.strip())
+
+
+def split_into_segments(text: str) -> list[str]:
+    """句読点でテキストをカラオケ字幕用セグメントに分割"""
+    import re
+    parts = re.split(r'(?<=[。！？\n])', text)
+    segments = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        # 長いセグメントはさらに20文字で分割
+        while len(part) > 22:
+            segments.append(part[:22])
+            part = part[22:]
+        if part:
+            segments.append(part)
+    return segments
+
+
+def hex_to_ass(hex_color: str, opacity: int) -> str:
+    """#RRGGBBとopacity(0=透明〜100=不透明)をASS色に変換"""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    alpha = int((100 - opacity) / 100 * 255)
+    return f"&H{alpha:02X}{b:02X}{g:02X}{r:02X}"
+
+
+def generate_ass(segments: list[str], total_duration: float,
+                 font: str = "", bold: bool = False,
+                 text_color: str = "#FFFFFF", text_opacity: int = 100,
+                 bg_color: str = "#000000", bg_opacity: int = 20) -> str:
+    """ASS形式の字幕ファイルを生成"""
+    if not font:
+        font = list(get_font_options().values())[0]
+    bold_flag = -1 if bold else 0
+    primary  = hex_to_ass(text_color, text_opacity)
+    backclr  = hex_to_ass(bg_color, bg_opacity)
+    seg_dur = total_duration / max(len(segments), 1)
+
+    def fmt(sec: float) -> str:
+        h = int(sec // 3600)
+        m = int((sec % 3600) // 60)
+        s = sec % 60
+        return f"{h}:{m:02d}:{s:05.2f}"
+
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV",
+        f"Style: Default,{font},28,{primary},&H00000000,{backclr},{bold_flag},3,2,0,2,20,20,30",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for i, seg in enumerate(segments):
+        start = fmt(i * seg_dur)
+        end   = fmt((i + 1) * seg_dur)
+        lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{seg}")
+
+    return "\n".join(lines)
 
 
 def merge_audio_video(video_path: str, audio_path: str, output_path: str,
-                      subtitle_text: str = ""):
-    font_path = get_font_path()
+                      subtitle_text: str = "", subtitle_font: str = "",
+                      subtitle_bold: bool = False,
+                      text_color: str = "#FFFFFF", text_opacity: int = 100,
+                      bg_color: str = "#000000", bg_opacity: int = 20):
     vf_filters = []
 
-    if subtitle_text and font_path:
-        # テキストをファイルに書き出してFFmpegに渡す（文字エスケープ回避）
-        text_file = output_path + ".txt"
-        with open(text_file, "w", encoding="utf-8") as f:
-            f.write(wrap_text(subtitle_text))
+    if subtitle_text:
+        duration = get_audio_duration(audio_path)
+        segments = split_into_segments(subtitle_text)
+        ass_content = generate_ass(segments, duration, subtitle_font, subtitle_bold,
+                                   text_color, text_opacity, bg_color, bg_opacity)
 
-        escaped_font = font_path.replace("\\", "/").replace(":", "\\:")
-        vf_filters.append(
-            f"drawtext=fontfile='{escaped_font}'"
-            f":textfile='{text_file}'"
-            f":fontsize=28:fontcolor=white"
-            f":box=1:boxcolor=black@0.6:boxborderw=8"
-            f":x=(w-text_w)/2:y=h-text_h-40"
-            f":line_spacing=6"
-        )
+        ass_file = output_path + ".ass"
+        with open(ass_file, "w", encoding="utf-8") as f:
+            f.write(ass_content)
+
+        escaped_ass = ass_file.replace("\\", "/").replace(":", "\\:")
+        vf_filters.append(f"subtitles='{escaped_ass}'")
 
     cmd = [FFMPEG, "-i", video_path, "-i", audio_path]
     if vf_filters:
@@ -367,6 +424,24 @@ if uploaded_file is not None:
             voice = VOICE_OPTIONS[step3_voice]
 
             show_subtitle = st.checkbox("字幕を表示する（テキストを動画に焼き込む）")
+            if show_subtitle:
+                font_options = get_font_options()
+                sub_font_name = st.selectbox("字幕フォント", list(font_options.keys()))
+                sub_font = font_options[sub_font_name]
+                sub_bold = st.checkbox("太字にする")
+                st.write("文字")
+                c1, c2 = st.columns(2)
+                text_color   = c1.color_picker("文字色", "#FFFFFF")
+                text_opacity = c2.slider("不透明度", 0, 100, 100, key="text_op")
+                st.write("背景")
+                c3, c4 = st.columns(2)
+                bg_color   = c3.color_picker("背景色", "#000000")
+                bg_opacity = c4.slider("不透明度", 0, 100, 20, key="bg_op")
+            else:
+                sub_font = ""
+                sub_bold = False
+                text_color, text_opacity = "#FFFFFF", 100
+                bg_color, bg_opacity = "#000000", 20
 
             if st.button("この内容で動画を生成する", type="primary"):
                 with tempfile.TemporaryDirectory() as out_dir:
@@ -374,15 +449,23 @@ if uploaded_file is not None:
                     with open(orig_video, "wb") as f:
                         f.write(st.session_state["video_bytes"])
 
-                    audio_path = os.path.join(out_dir, "narration.mp3")
+                    raw_audio = os.path.join(out_dir, "narration_raw.mp3")
+                    audio_path = os.path.join(out_dir, "narration.wav")
                     with st.spinner("Edge TTSで音声を合成中..."):
-                        text_to_speech(edited_text, voice, audio_path)
+                        text_to_speech(edited_text, voice, raw_audio)
+                        # WAVに変換してFFmpegが確実に読めるようにする
+                        subprocess.run([FFMPEG, "-y", "-i", raw_audio,
+                                        "-ar", "44100", "-ac", "1", audio_path],
+                                       capture_output=True)
 
                     output_path = os.path.join(out_dir, "output.mp4")
                     with st.spinner("FFmpegで動画を合成中..."):
                         try:
                             subtitle = edited_text if show_subtitle else ""
-                            merge_audio_video(orig_video, audio_path, output_path, subtitle)
+                            merge_audio_video(orig_video, audio_path, output_path,
+                                              subtitle, sub_font, sub_bold,
+                                              text_color, text_opacity,
+                                              bg_color, bg_opacity)
                         except RuntimeError as e:
                             st.error(str(e))
                             st.stop()
