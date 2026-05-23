@@ -44,23 +44,16 @@ groq_api_key = st.secrets.get("GROQ_API_KEY") if hasattr(st, "secrets") else Non
 groq_api_key = groq_api_key or os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=groq_api_key)
 
-st.set_page_config(page_title="動画ナレーター自動生成", layout="wide")
-st.title("動画ナレーター自動生成アプリ")
+st.set_page_config(page_title="動画ナレーター自動生成", layout="centered")
+st.title("動画ナレーター自動生成")
 
-# --- サイドバー ---
-with st.sidebar:
-    st.header("設定")
-    st.write("APIキー状態:")
-    st.write("Groq:", "✅" if groq_api_key else "❌")
+# --- 設定（折りたたみ） ---
+with st.expander("設定"):
+    st.write("Groq API:", "✅" if groq_api_key else "❌")
     st.write("Edge TTS:", "✅（キー不要）")
-
     st.divider()
-    st.subheader("解析設定")
     frame_count = st.slider("抽出フレーム数", min_value=3, max_value=5, value=5,
                             help="Groq Vision APIの仕様上、最大5枚")
-
-    st.divider()
-    st.subheader("音声設定")
     voice_name = st.selectbox("ナレーター音声", list(VOICE_OPTIONS.keys()))
     voice = VOICE_OPTIONS[voice_name]
 
@@ -285,7 +278,7 @@ if uploaded_file is not None:
 
         narrations = st.session_state["narrations"]
         if narrations:
-            selected_style = st.radio("スタイルを選択", list(narrations.keys()), horizontal=True)
+            selected_style = st.radio("スタイルを選択", list(narrations.keys()))
             edited_text = st.text_area(
                 "ナレーション（自由に編集できます）",
                 narrations.get(selected_style, ""),
