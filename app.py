@@ -288,7 +288,8 @@ if uploaded_file is not None:
 
             st.divider()
             st.header("Step 3: 音声合成＆動画書き出し")
-            st.write(f"音声：{voice_name}")
+            voice_name = st.selectbox("ナレーター音声", list(VOICE_OPTIONS.keys()), key="voice_step3")
+            voice = VOICE_OPTIONS[voice_name]
 
             if st.button("この内容で動画を生成する", type="primary"):
                 with tempfile.TemporaryDirectory() as out_dir:
