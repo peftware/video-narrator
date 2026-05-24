@@ -246,65 +246,85 @@ def split_into_segments(text: str) -> list[str]:
     return segments
 
 
-def hex_to_ass(hex_color: str, opacity: int) -> str:
-    """#RRGGBBとopacity(0=透明〜100=不透明)をASS色に変換"""
-    h = hex_color.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    alpha = int((100 - opacity) / 100 * 255)
-    return f"&H{alpha:02X}{b:02X}{g:02X}{r:02X}"
+WINDOWS_FONT_PATHS = {
+    "Meiryo":    ["meiryo.ttc", "meiryob.ttc"],
+    "Yu Gothic": ["YuGoth.ttc", "yugothib.ttc"],
+    "Yu Mincho": ["yumin.ttf"],
+    "MS Gothic": ["msgothic.ttc"],
+}
+LINUX_FONT_FALLBACKS = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+]
 
 
-def generate_ass(segments: list[str], total_duration: float,
-                 font: str = "", bold: bool = False,
-                 text_color: str = "#FFFFFF", text_opacity: int = 100,
-                 bg_color: str = "#000000", bg_opacity: int = 20) -> str:
-    if not font:
-        font = list(get_font_options().values())[0]
-    bold_flag = -1 if bold else 0
+def resolve_font_path(font_name: str) -> str:
+    if platform.system() == "Windows":
+        fonts_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+        for fname in WINDOWS_FONT_PATHS.get(font_name, []):
+            path = os.path.join(fonts_dir, fname)
+            if os.path.exists(path):
+                return path
+        return ""
+    try:
+        r = subprocess.run(
+            ["fc-match", font_name, "--format=%{file}"],
+            capture_output=True, text=True, timeout=5
+        )
+        path = r.stdout.strip()
+        if path and os.path.exists(path):
+            return path
+    except Exception:
+        pass
+    for candidate in LINUX_FONT_FALLBACKS:
+        if os.path.exists(candidate):
+            return candidate
+    return ""
+
+
+def build_drawtext_filter(segments: list[str], total_duration: float,
+                          font_path: str, bold: bool = False,
+                          text_color: str = "#FFFFFF", text_opacity: int = 100,
+                          bg_color: str = "#000000", bg_opacity: int = 20) -> str:
     seg_dur = total_duration / max(len(segments), 1)
+    font_size = 28
+    box_pad = 8
 
-    def to_bgr(hex_color: str) -> str:
+    def to_ffcolor(hex_color: str, opacity: int) -> str:
         h = hex_color.lstrip("#")
-        return f"{h[4:6]}{h[2:4]}{h[0:2]}"
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"0x{r:02x}{g:02x}{b:02x}@{opacity/100:.2f}"
 
-    def to_alpha(opacity: int) -> str:
-        return f"{int((100 - opacity) / 100 * 255):02X}"
+    def esc(text: str) -> str:
+        return text.replace("\\", "\\\\").replace("'", "\\'")
 
-    t_bgr   = to_bgr(text_color)
-    t_alpha = to_alpha(text_opacity)
-    b_bgr   = to_bgr(bg_color)
-    b_alpha = to_alpha(bg_opacity)
+    text_col = to_ffcolor(text_color, text_opacity)
+    box_col  = to_ffcolor(bg_color, bg_opacity)
+    font_opt = f":fontfile='{font_path}'" if font_path else ""
+    bold_opt = ":bold=1" if bold else ""
+    y_pos    = f"h-{font_size + box_pad * 2 + 10}"
 
-    # inline override tags applied per-line so alpha actually takes effect in libass
-    override = (
-        f"{{\\1c&H{t_bgr}&\\1a&H{t_alpha}&"
-        f"\\4c&H{b_bgr}&\\4a&H{b_alpha}&}}"
-    )
-
-    def fmt(sec: float) -> str:
-        h = int(sec // 3600)
-        m = int((sec % 3600) // 60)
-        s = sec % 60
-        return f"{h}:{m:02d}:{s:05.2f}"
-
-    lines = [
-        "[Script Info]",
-        "ScriptType: v4.00+",
-        "WrapStyle: 0",
-        "",
-        "[V4+ Styles]",
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Default,{font},28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,{bold_flag},0,0,0,100,100,0,0,3,10,0,2,20,20,30,1",
-        "",
-        "[Events]",
-        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-    ]
+    parts = []
     for i, seg in enumerate(segments):
-        start = fmt(i * seg_dur)
-        end   = fmt((i + 1) * seg_dur)
-        lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{override}{seg}")
+        start = i * seg_dur
+        end   = (i + 1) * seg_dur
+        part = (
+            f"drawtext=text='{esc(seg)}'"
+            f"{font_opt}"
+            f":fontsize={font_size}"
+            f":fontcolor={text_col}"
+            f":box=1"
+            f":boxcolor={box_col}"
+            f":boxborderw={box_pad}"
+            f":x=(w-text_w)/2"
+            f":y={y_pos}"
+            f":enable='between(t,{start:.3f},{end:.3f})'"
+            f"{bold_opt}"
+        )
+        parts.append(part)
 
-    return "\n".join(lines)
+    return ",".join(parts)
 
 
 def merge_audio_video(video_path: str, audio_path: str, output_path: str,
@@ -317,15 +337,12 @@ def merge_audio_video(video_path: str, audio_path: str, output_path: str,
     if subtitle_text:
         duration = get_audio_duration(audio_path)
         segments = split_into_segments(subtitle_text)
-        ass_content = generate_ass(segments, duration, subtitle_font, subtitle_bold,
-                                   text_color, text_opacity, bg_color, bg_opacity)
-
-        ass_file = output_path + ".ass"
-        with open(ass_file, "w", encoding="utf-8") as f:
-            f.write(ass_content)
-
-        escaped_ass = ass_file.replace("\\", "/").replace(":", "\\:")
-        vf_filters.append(f"subtitles='{escaped_ass}'")
+        font_path = resolve_font_path(subtitle_font)
+        dt = build_drawtext_filter(
+            segments, duration, font_path, subtitle_bold,
+            text_color, text_opacity, bg_color, bg_opacity
+        )
+        vf_filters.append(dt)
 
     cmd = [FFMPEG, "-i", video_path, "-i", audio_path]
     if vf_filters:
