@@ -245,6 +245,33 @@ def get_audio_duration(audio_path: str) -> float:
     return float(out)
 
 
+def get_video_duration(video_path: str) -> float:
+    result = subprocess.run(
+        [FFPROBE, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+        capture_output=True, text=True
+    )
+    out = result.stdout.strip()
+    if not out:
+        raise RuntimeError(f"動画ファイルの長さを取得できません。ffprobeエラー:\n{result.stderr}")
+    return float(out)
+
+
+def build_atempo_filter(ratio: float) -> str:
+    """atempo フィルターチェーンを生成（0.5-2.0の範囲外はチェーン）"""
+    filters = []
+    r = ratio
+    while r > 2.0:
+        filters.append("atempo=2.0")
+        r /= 2.0
+    while r < 0.5:
+        filters.append("atempo=0.5")
+        r /= 0.5
+    if abs(r - 1.0) > 0.001:
+        filters.append(f"atempo={r:.4f}")
+    return ",".join(filters) if filters else "anull"
+
+
 def split_into_segments(text: str) -> list[str]:
     """句読点でテキストをカラオケ字幕用セグメントに分割"""
     import re
@@ -346,11 +373,12 @@ def merge_audio_video(video_path: str, audio_path: str, output_path: str,
                       subtitle_text: str = "", subtitle_font: str = "",
                       text_color: str = "#FFFFFF", text_opacity: int = 100,
                       bg_color: str = "#000000", bg_opacity: int = 20,
-                      font_size: int = 28, sub_speed: float = 1.0):
+                      font_size: int = 28, sub_speed: float = 1.0,
+                      total_duration: float = 0.0):
     vf_filters = []
 
     if subtitle_text:
-        duration = get_audio_duration(audio_path)
+        duration = total_duration if total_duration > 0 else get_audio_duration(audio_path)
         segments = split_into_segments(subtitle_text)
         font_path = resolve_font_path(subtitle_font)
         dt = build_drawtext_filter(
@@ -364,7 +392,11 @@ def merge_audio_video(video_path: str, audio_path: str, output_path: str,
         cmd += ["-vf", ",".join(vf_filters), "-c:a", "aac"]
     else:
         cmd += ["-c:v", "copy", "-c:a", "aac"]
-    cmd += ["-map", "0:v:0", "-map", "1:a:0", "-shortest", output_path, "-y"]
+    # total_duration > 0 means audio already matches video length — no -shortest needed
+    if total_duration > 0:
+        cmd += ["-map", "0:v:0", "-map", "1:a:0", output_path, "-y"]
+    else:
+        cmd += ["-map", "0:v:0", "-map", "1:a:0", "-shortest", output_path, "-y"]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -577,6 +609,29 @@ if uploaded_file is not None:
                             )
                             st.stop()
 
+                    # 動画の長さに合わせて音声を伸縮
+                    with st.spinner("動画の長さに合わせてナレーションを調整中..."):
+                        try:
+                            video_dur = get_video_duration(orig_video)
+                            audio_dur = get_audio_duration(audio_path)
+                            ratio = video_dur / audio_dur if audio_dur > 0 else 1.0
+                            if abs(ratio - 1.0) > 0.01:
+                                atempo_f = build_atempo_filter(ratio)
+                                stretched_path = os.path.join(out_dir, "narration_stretched.wav")
+                                stretch_result = subprocess.run(
+                                    [FFMPEG, "-y", "-i", audio_path,
+                                     "-af", atempo_f, stretched_path],
+                                    capture_output=True, text=True
+                                )
+                                if stretch_result.returncode == 0 and os.path.getsize(stretched_path) > 0:
+                                    audio_path = stretched_path
+                                else:
+                                    st.warning("音声の長さ調整に失敗しました。元の長さで続行します。")
+                                    video_dur = 0.0  # fallback: use -shortest
+                        except Exception as e:
+                            st.warning(f"長さ取得エラー（元の速度で続行）: {e}")
+                            video_dur = 0.0
+
                     output_path = os.path.join(out_dir, "output.mp4")
                     with st.spinner("FFmpegで動画を合成中..."):
                         try:
@@ -584,7 +639,8 @@ if uploaded_file is not None:
                             merge_audio_video(orig_video, audio_path, output_path,
                                               subtitle, sub_font,
                                               text_color, text_opacity,
-                                              bg_color, bg_opacity, sub_font_size, sub_speed)
+                                              bg_color, bg_opacity, sub_font_size, sub_speed,
+                                              total_duration=video_dur)
                         except Exception as e:
                             st.error(f"動画生成エラー: {e}")
                             st.stop()
