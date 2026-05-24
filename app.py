@@ -301,7 +301,7 @@ def resolve_font_path(font_name: str) -> str:
 
 
 def build_drawtext_filter(segments: list[str], total_duration: float,
-                          font_path: str, bold: bool = False,
+                          font_path: str,
                           text_color: str = "#FFFFFF", text_opacity: int = 100,
                           bg_color: str = "#000000", bg_opacity: int = 20,
                           font_size: int = 28) -> str:
@@ -319,7 +319,6 @@ def build_drawtext_filter(segments: list[str], total_duration: float,
     text_col = to_ffcolor(text_color, text_opacity)
     box_col  = to_ffcolor(bg_color, bg_opacity)
     font_opt = f":fontfile='{font_path}'" if font_path else ""
-    bold_opt = ":bold=1" if bold else ""
     y_pos    = f"h-{font_size + box_pad * 2 + 10}"
 
     parts = []
@@ -337,7 +336,6 @@ def build_drawtext_filter(segments: list[str], total_duration: float,
             f":x=(w-text_w)/2"
             f":y={y_pos}"
             f":enable='between(t,{start:.3f},{end:.3f})'"
-            f"{bold_opt}"
         )
         parts.append(part)
 
@@ -346,7 +344,6 @@ def build_drawtext_filter(segments: list[str], total_duration: float,
 
 def merge_audio_video(video_path: str, audio_path: str, output_path: str,
                       subtitle_text: str = "", subtitle_font: str = "",
-                      subtitle_bold: bool = False,
                       text_color: str = "#FFFFFF", text_opacity: int = 100,
                       bg_color: str = "#000000", bg_opacity: int = 20,
                       font_size: int = 28):
@@ -357,7 +354,7 @@ def merge_audio_video(video_path: str, audio_path: str, output_path: str,
         segments = split_into_segments(subtitle_text)
         font_path = resolve_font_path(subtitle_font)
         dt = build_drawtext_filter(
-            segments, duration, font_path, subtitle_bold,
+            segments, duration, font_path,
             text_color, text_opacity, bg_color, bg_opacity, font_size
         )
         vf_filters.append(dt)
@@ -502,7 +499,7 @@ if uploaded_file is not None:
                 font_options = get_font_options()
                 sub_font_name = st.selectbox("字幕フォント", list(font_options.keys()))
                 sub_font = font_options[sub_font_name]
-                sub_bold = st.checkbox("太字にする")
+                st.caption("※ 太字はフォントファイルに依存するため現在非対応")
                 sub_font_size = st.slider("文字サイズ", 16, 64, 28, key="font_sz")
                 st.write("文字")
                 c1, c2 = st.columns(2)
@@ -514,7 +511,6 @@ if uploaded_file is not None:
                 bg_opacity = c4.slider("不透明度", 0, 100, 20, key="bg_op")
             else:
                 sub_font = ""
-                sub_bold = False
                 sub_font_size = 28
                 text_color, text_opacity = "#FFFFFF", 100
                 bg_color, bg_opacity = "#000000", 20
@@ -563,7 +559,7 @@ if uploaded_file is not None:
                         try:
                             subtitle = edited_text if show_subtitle else ""
                             merge_audio_video(orig_video, audio_path, output_path,
-                                              subtitle, sub_font, sub_bold,
+                                              subtitle, sub_font,
                                               text_color, text_opacity,
                                               bg_color, bg_opacity, sub_font_size)
                         except RuntimeError as e:
