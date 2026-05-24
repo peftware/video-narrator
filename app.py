@@ -187,9 +187,8 @@ def generate_narrations(analysis: str) -> dict[str, str]:
 
 
 def text_to_speech_bytes(text: str, voice: str, rate: str = "+0%") -> bytes:
-    """edge_tts からオーディオバイト列を取得して返す（例外は RuntimeError で再送出）"""
-    result: list = [None]
-    error:  list = [None]
+    """edge_tts からオーディオバイト列を取得して返す（失敗時は最大3回リトライ）"""
+    import time
 
     async def _collect():
         communicate = edge_tts.Communicate(text, voice, rate=rate)
@@ -199,23 +198,39 @@ def text_to_speech_bytes(text: str, voice: str, rate: str = "+0%") -> bytes:
                 chunks += chunk["data"]
         return chunks
 
-    def _run():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    def _run_once():
+        result: list = [None]
+        error:  list = [None]
+
+        def _run():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result[0] = loop.run_until_complete(_collect())
+            except Exception as e:
+                error[0] = e
+            finally:
+                loop.close()
+
+        t = threading.Thread(target=_run)
+        t.start()
+        t.join()
+        if error[0] is not None:
+            raise error[0]
+        return result[0] or b""
+
+    last_error = None
+    for attempt in range(3):
         try:
-            result[0] = loop.run_until_complete(_collect())
+            data = _run_once()
+            if data:
+                return data
+            last_error = Exception("音声データが空でした")
         except Exception as e:
-            error[0] = e
-        finally:
-            loop.close()
-
-    thread = threading.Thread(target=_run)
-    thread.start()
-    thread.join()
-
-    if error[0] is not None:
-        raise RuntimeError(f"Edge TTS エラー: {error[0]}")
-    return result[0] or b""
+            last_error = e
+            if attempt < 2:
+                time.sleep(2 ** attempt)  # 1s, 2s
+    raise RuntimeError(f"Edge TTS エラー（3回失敗）: {last_error}")
 
 
 WINDOWS_FONTS = {
