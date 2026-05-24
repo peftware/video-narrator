@@ -30,12 +30,6 @@ NARRATION_STYLES = [
     "Vlog・日常動画風",
 ]
 
-VOICE_OPTIONS = {
-    "Nanami（女性・落ち着いた）": "ja-JP-NanamiNeural",
-    "Keita（男性・標準）":        "ja-JP-KeitaNeural",
-    "Aoi（女性・明るい）":        "ja-JP-AoiNeural",
-    "Daichi（男性・若い）":       "ja-JP-DaichiNeural",
-}
 
 try:
     groq_api_key = st.secrets.get("GROQ_API_KEY")
@@ -60,25 +54,13 @@ button[kind="secondary"]:hover {
 </style>
 """, unsafe_allow_html=True)
 
-# 音声選択をセッション状態で管理
-if "selected_voice_name" not in st.session_state:
-    st.session_state["selected_voice_name"] = list(VOICE_OPTIONS.keys())[0]
-
 # --- 設定（折りたたみ） ---
 with st.expander("設定"):
     st.write("Groq API:", "✅" if groq_api_key else "❌")
-    st.write("Edge TTS:", "✅（キー不要）")
+    st.write("音声合成:", "✅ Google TTS（キー不要）")
     st.divider()
     frame_count = st.slider("抽出フレーム数", min_value=3, max_value=5, value=5,
                             help="Groq Vision APIの仕様上、最大5枚")
-    voice_keys = list(VOICE_OPTIONS.keys())
-    setting_voice = st.selectbox(
-        "ナレーター音声",
-        voice_keys,
-        index=voice_keys.index(st.session_state["selected_voice_name"]),
-        key="voice_setting"
-    )
-    st.session_state["selected_voice_name"] = setting_voice
 
 
 # --- ユーティリティ関数 ---
@@ -183,44 +165,14 @@ def generate_narrations(analysis: str) -> dict[str, str]:
     return narrations
 
 
-def text_to_speech_bytes(text: str, voice: str, rate: str = "+0%") -> bytes:
-    """edge_tts CLI をサブプロセスで呼び出して音声バイト列を返す。
-    asyncio/スレッドの衝突を避けるため Python -m edge_tts を直接実行する。"""
-    import sys, time
-
-    last_error = None
-    for attempt in range(5):
-        tmp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-                tmp_path = tmp.name
-
-            cmd = [sys.executable, "-m", "edge_tts",
-                   "--voice", voice, "--text", text, "--write-media", tmp_path]
-            if rate and rate != "+0%":
-                cmd += ["--rate", rate]
-
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-            if (proc.returncode == 0
-                    and os.path.exists(tmp_path)
-                    and os.path.getsize(tmp_path) > 0):
-                with open(tmp_path, "rb") as f:
-                    return f.read()
-            last_error = Exception(proc.stderr.strip() or "CLIが音声を生成しませんでした")
-        except subprocess.TimeoutExpired:
-            last_error = Exception("タイムアウト（90秒）")
-        except Exception as e:
-            last_error = e
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-        if attempt < 4:
-            time.sleep(min(2 ** attempt, 8))
-
-    raise RuntimeError(f"音声合成に失敗しました（voice={voice}, rate={rate}）: {last_error}")
+def text_to_speech_bytes(text: str) -> bytes:
+    """Google TTS (gTTS) で日本語音声を生成して MP3 バイト列を返す"""
+    from gtts import gTTS
+    import io
+    tts = gTTS(text=text, lang="ja")
+    buf = io.BytesIO()
+    tts.write_to_fp(buf)
+    return buf.getvalue()
 
 
 WINDOWS_FONTS = {
@@ -527,25 +479,24 @@ if uploaded_file is not None:
             _speed_vals  = [0.5,    0.75,     1.0,            1.25,    1.5,    1.75,    2.0   ]
             _speed_map   = dict(zip(_speed_strs, _speed_vals))
 
-            voice_keys = list(VOICE_OPTIONS.keys())
-            step3_voice = st.selectbox(
-                "ナレーター音声",
-                voice_keys,
-                index=voice_keys.index(st.session_state["selected_voice_name"]),
-                key="voice_step3"
-            )
-            st.session_state["selected_voice_name"] = step3_voice
-            voice = VOICE_OPTIONS[step3_voice]
+            st.caption("音声: Google TTS（日本語）")
 
-            narr_speed_str = st.select_slider("読み上げ速度", options=_speed_strs, value="1.0x（標準）")
-            narr_speed = _speed_map[narr_speed_str]
-            tts_rate = f"{int((narr_speed - 1) * 100):+d}%"
+            auto_sync = st.checkbox(
+                "動画の長さにナレーションを自動同期する（推奨）",
+                value=True,
+                help="ONにすると音声を動画の長さに合わせて伸縮します。OFFにすると生成した音声をそのまま使い、音声が終わった時点で動画もカットされます。"
+            )
+            if not auto_sync:
+                narr_speed_str = st.select_slider("読み上げ速度", options=_speed_strs, value="1.0x（標準）")
+                narr_speed = _speed_map[narr_speed_str]
+            else:
+                narr_speed = 1.0
 
             # --- プレビュー ---
             if st.button("ナレーション音声をプレビュー再生"):
                 with st.spinner("音声を生成中..."):
                     try:
-                        prev_bytes = text_to_speech_bytes(edited_text, voice, tts_rate)
+                        prev_bytes = text_to_speech_bytes(edited_text)
                         st.session_state["preview_audio"] = prev_bytes
                     except Exception as e:
                         st.error(f"プレビューエラー: {e}")
@@ -575,12 +526,6 @@ if uploaded_file is not None:
                 text_color, text_opacity = "#FFFFFF", 100
                 bg_color, bg_opacity = "#000000", 20
 
-            auto_sync = st.checkbox(
-                "動画の長さにナレーションを自動同期する（推奨）",
-                value=True,
-                help="ONにすると音声を動画の長さに合わせて伸縮します。OFFにすると元のTTS速度のまま合成し、音声が終わった時点で動画もカットされます。"
-            )
-
             if st.button("この内容で動画を生成する", type="primary"):
                 with tempfile.TemporaryDirectory() as out_dir:
                     orig_video = os.path.join(out_dir, "input.mp4")
@@ -588,62 +533,59 @@ if uploaded_file is not None:
                         f.write(st.session_state["video_bytes"])
 
                     audio_path = os.path.join(out_dir, "narration.wav")
-                    with st.spinner("Edge TTSで音声を合成中..."):
+                    with st.spinner("Google TTSで音声を合成中..."):
                         try:
-                            audio_data = text_to_speech_bytes(edited_text, voice, tts_rate)
+                            audio_data = text_to_speech_bytes(edited_text)
                         except Exception as e:
                             st.error(str(e))
                             st.stop()
 
                         if not audio_data:
-                            st.error("Edge TTSが音声データを生成しませんでした")
+                            st.error("音声データを生成しませんでした")
                             st.stop()
 
-                        # バイト列を直接 FFmpeg の stdin にパイプして WAV に変換
                         conv = subprocess.run(
                             [FFMPEG, "-y", "-f", "mp3", "-i", "pipe:0",
                              "-ar", "44100", "-ac", "1", audio_path],
                             input=audio_data, capture_output=True
                         )
                         if conv.returncode != 0 or not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
-                            # mp3 ヒントが失敗した場合はフォーマット自動検出で再試行
                             conv = subprocess.run(
                                 [FFMPEG, "-y", "-i", "pipe:0",
                                  "-ar", "44100", "-ac", "1", audio_path],
                                 input=audio_data, capture_output=True
                             )
                         if conv.returncode != 0 or not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
-                            hdr_hex = audio_data[:16].hex() if audio_data else "empty"
-                            st.error(
-                                f"音声変換エラー（header: {hdr_hex}）:\n"
-                                f"{conv.stderr.decode(errors='replace')[-400:]}"
-                            )
+                            st.error(f"音声変換エラー:\n{conv.stderr.decode(errors='replace')[-400:]}")
                             st.stop()
 
-                    # 動画の長さに合わせて音声を伸縮（auto_sync がONのとき）
+                    # 音声の速度調整（auto_sync: 動画長に合わせる / OFF: narr_speed を適用）
                     video_dur = 0.0
-                    if auto_sync:
-                        with st.spinner("動画の長さに合わせてナレーションを調整中..."):
-                            try:
+                    with st.spinner("音声を調整中..."):
+                        try:
+                            audio_dur = get_audio_duration(audio_path)
+                            if auto_sync:
                                 video_dur = get_video_duration(orig_video)
-                                audio_dur = get_audio_duration(audio_path)
-                                ratio = video_dur / audio_dur if audio_dur > 0 else 1.0
-                                if abs(ratio - 1.0) > 0.01:
-                                    atempo_f = build_atempo_filter(ratio)
-                                    stretched_path = os.path.join(out_dir, "narration_stretched.wav")
-                                    stretch_result = subprocess.run(
-                                        [FFMPEG, "-y", "-i", audio_path,
-                                         "-af", atempo_f, stretched_path],
-                                        capture_output=True, text=True
-                                    )
-                                    if stretch_result.returncode == 0 and os.path.getsize(stretched_path) > 0:
-                                        audio_path = stretched_path
-                                    else:
-                                        st.warning("音声の長さ調整に失敗しました。元の長さで続行します。")
-                                        video_dur = 0.0
-                            except Exception as e:
-                                st.warning(f"長さ取得エラー（元の速度で続行）: {e}")
-                                video_dur = 0.0
+                                # 正しい ratio: audio_dur / video_dur（遅くする＝0.5以下、速くする＝2.0以上）
+                                ratio = audio_dur / video_dur if video_dur > 0 else 1.0
+                            else:
+                                ratio = narr_speed  # ユーザー指定速度をそのまま atempo に
+
+                            if abs(ratio - 1.0) > 0.01:
+                                atempo_f = build_atempo_filter(ratio)
+                                stretched_path = os.path.join(out_dir, "narration_adjusted.wav")
+                                res = subprocess.run(
+                                    [FFMPEG, "-y", "-i", audio_path, "-af", atempo_f, stretched_path],
+                                    capture_output=True, text=True
+                                )
+                                if res.returncode == 0 and os.path.getsize(stretched_path) > 0:
+                                    audio_path = stretched_path
+                                else:
+                                    st.warning("速度調整に失敗しました。元の長さで続行します。")
+                                    video_dur = 0.0
+                        except Exception as e:
+                            st.warning(f"速度調整エラー（元の長さで続行）: {e}")
+                            video_dur = 0.0
 
                     output_path = os.path.join(out_dir, "output.mp4")
                     with st.spinner("FFmpegで動画を合成中..."):
