@@ -569,6 +569,8 @@ if uploaded_file is not None:
             else:
                 narr_speed = 1.0
 
+            st.caption(f"Voice ID: `{voice}`  Pitch: `{pitch:+d}st`")
+
             # voice / pitch が変わったら古いプレビューを破棄
             if (st.session_state.get("preview_voice") != voice
                     or st.session_state.get("preview_pitch") != pitch):
