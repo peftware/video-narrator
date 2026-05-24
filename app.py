@@ -515,22 +515,36 @@ if uploaded_file is not None:
                     audio_path = os.path.join(out_dir, "narration.wav")
                     with st.spinner("Edge TTSで音声を合成中..."):
                         text_to_speech(edited_text, voice, raw_audio)
-                        # 形式が不確かなのでフォーマットヒントを変えながら変換を試みる
-                        conv = None
-                        for fmt_args in [
-                            ["-probesize", "32M", "-analyzeduration", "32M"],
-                            ["-f", "mp3"],
-                            ["-f", "webm"],
-                            [],
-                        ]:
-                            conv = subprocess.run(
-                                [FFMPEG, "-y"] + fmt_args + ["-i", raw_audio, "-ar", "44100", "-ac", "1", audio_path],
-                                capture_output=True
-                            )
-                            if conv.returncode == 0 and os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
-                                break
+
+                        if not os.path.exists(raw_audio) or os.path.getsize(raw_audio) == 0:
+                            st.error("Edge TTSが音声ファイルを生成しませんでした")
+                            st.stop()
+
+                        # マジックバイトで実際の形式を検出して変換
+                        with open(raw_audio, "rb") as _f:
+                            _hdr = _f.read(16)
+                        if _hdr[:4] == b'\x1aE\xdf\xa3':
+                            _fmt = "webm"
+                        elif _hdr[:4] == b'OggS':
+                            _fmt = "ogg"
+                        elif _hdr[:4] == b'RIFF':
+                            _fmt = "wav"
+                        elif _hdr[:3] == b'ID3' or (_hdr[0] == 0xff and _hdr[1] & 0xe0 == 0xe0):
+                            _fmt = "mp3"
+                        else:
+                            _fmt = ""
+                            st.warning(f"未知の音声形式（header: {_hdr[:8].hex()}）。自動検出で試みます。")
+
+                        _fmt_args = ["-f", _fmt] if _fmt else []
+                        conv = subprocess.run(
+                            [FFMPEG, "-y"] + _fmt_args + ["-i", raw_audio, "-ar", "44100", "-ac", "1", audio_path],
+                            capture_output=True
+                        )
                         if conv.returncode != 0 or not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
-                            st.error(f"音声変換エラー:\n{conv.stderr.decode(errors='replace')}")
+                            st.error(
+                                f"音声変換エラー（検出形式: {_fmt or '不明'}, header: {_hdr[:8].hex()}）:\n"
+                                f"{conv.stderr.decode(errors='replace')[-500:]}"
+                            )
                             st.stop()
 
                     output_path = os.path.join(out_dir, "output.mp4")
