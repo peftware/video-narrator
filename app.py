@@ -515,11 +515,21 @@ if uploaded_file is not None:
                     audio_path = os.path.join(out_dir, "narration.wav")
                     with st.spinner("Edge TTSで音声を合成中..."):
                         text_to_speech(edited_text, voice, raw_audio)
-                        conv = subprocess.run(
-                            [FFMPEG, "-y", "-i", raw_audio, "-ar", "44100", "-ac", "1", audio_path],
-                            capture_output=True
-                        )
-                        if conv.returncode != 0 or not os.path.exists(audio_path):
+                        # 形式が不確かなのでフォーマットヒントを変えながら変換を試みる
+                        conv = None
+                        for fmt_args in [
+                            ["-probesize", "32M", "-analyzeduration", "32M"],
+                            ["-f", "mp3"],
+                            ["-f", "webm"],
+                            [],
+                        ]:
+                            conv = subprocess.run(
+                                [FFMPEG, "-y"] + fmt_args + ["-i", raw_audio, "-ar", "44100", "-ac", "1", audio_path],
+                                capture_output=True
+                            )
+                            if conv.returncode == 0 and os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+                                break
+                        if conv.returncode != 0 or not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
                             st.error(f"音声変換エラー:\n{conv.stderr.decode(errors='replace')}")
                             st.stop()
 
