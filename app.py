@@ -570,6 +570,12 @@ if uploaded_file is not None:
                 text_color, text_opacity = "#FFFFFF", 100
                 bg_color, bg_opacity = "#000000", 20
 
+            auto_sync = st.checkbox(
+                "動画の長さにナレーションを自動同期する（推奨）",
+                value=True,
+                help="ONにすると音声を動画の長さに合わせて伸縮します。OFFにすると元のTTS速度のまま合成し、音声が終わった時点で動画もカットされます。"
+            )
+
             if st.button("この内容で動画を生成する", type="primary"):
                 with tempfile.TemporaryDirectory() as out_dir:
                     orig_video = os.path.join(out_dir, "input.mp4")
@@ -609,28 +615,30 @@ if uploaded_file is not None:
                             )
                             st.stop()
 
-                    # 動画の長さに合わせて音声を伸縮
-                    with st.spinner("動画の長さに合わせてナレーションを調整中..."):
-                        try:
-                            video_dur = get_video_duration(orig_video)
-                            audio_dur = get_audio_duration(audio_path)
-                            ratio = video_dur / audio_dur if audio_dur > 0 else 1.0
-                            if abs(ratio - 1.0) > 0.01:
-                                atempo_f = build_atempo_filter(ratio)
-                                stretched_path = os.path.join(out_dir, "narration_stretched.wav")
-                                stretch_result = subprocess.run(
-                                    [FFMPEG, "-y", "-i", audio_path,
-                                     "-af", atempo_f, stretched_path],
-                                    capture_output=True, text=True
-                                )
-                                if stretch_result.returncode == 0 and os.path.getsize(stretched_path) > 0:
-                                    audio_path = stretched_path
-                                else:
-                                    st.warning("音声の長さ調整に失敗しました。元の長さで続行します。")
-                                    video_dur = 0.0  # fallback: use -shortest
-                        except Exception as e:
-                            st.warning(f"長さ取得エラー（元の速度で続行）: {e}")
-                            video_dur = 0.0
+                    # 動画の長さに合わせて音声を伸縮（auto_sync がONのとき）
+                    video_dur = 0.0
+                    if auto_sync:
+                        with st.spinner("動画の長さに合わせてナレーションを調整中..."):
+                            try:
+                                video_dur = get_video_duration(orig_video)
+                                audio_dur = get_audio_duration(audio_path)
+                                ratio = video_dur / audio_dur if audio_dur > 0 else 1.0
+                                if abs(ratio - 1.0) > 0.01:
+                                    atempo_f = build_atempo_filter(ratio)
+                                    stretched_path = os.path.join(out_dir, "narration_stretched.wav")
+                                    stretch_result = subprocess.run(
+                                        [FFMPEG, "-y", "-i", audio_path,
+                                         "-af", atempo_f, stretched_path],
+                                        capture_output=True, text=True
+                                    )
+                                    if stretch_result.returncode == 0 and os.path.getsize(stretched_path) > 0:
+                                        audio_path = stretched_path
+                                    else:
+                                        st.warning("音声の長さ調整に失敗しました。元の長さで続行します。")
+                                        video_dur = 0.0
+                            except Exception as e:
+                                st.warning(f"長さ取得エラー（元の速度で続行）: {e}")
+                                video_dur = 0.0
 
                     output_path = os.path.join(out_dir, "output.mp4")
                     with st.spinner("FFmpegで動画を合成中..."):
