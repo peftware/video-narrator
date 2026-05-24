@@ -485,8 +485,10 @@ if uploaded_file is not None:
             st.divider()
             st.header("Step 3: 音声合成＆動画書き出し")
 
-            _speed_opts = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-            _speed_labels = ["0.5x", "0.75x", "1.0x (標準)", "1.25x", "1.5x", "1.75x", "2.0x"]
+            # 速度オプション: 文字列で定義してfloatに変換（format_funcのfloat比較エラーを回避）
+            _speed_strs  = ["0.5x", "0.75x", "1.0x（標準）", "1.25x", "1.5x", "1.75x", "2.0x"]
+            _speed_vals  = [0.5,    0.75,     1.0,            1.25,    1.5,    1.75,    2.0   ]
+            _speed_map   = dict(zip(_speed_strs, _speed_vals))
 
             voice_keys = list(VOICE_OPTIONS.keys())
             step3_voice = st.selectbox(
@@ -498,10 +500,8 @@ if uploaded_file is not None:
             st.session_state["selected_voice_name"] = step3_voice
             voice = VOICE_OPTIONS[step3_voice]
 
-            narr_speed = st.select_slider(
-                "読み上げ速度", options=_speed_opts,
-                value=1.0, format_func=lambda v: _speed_labels[_speed_opts.index(v)]
-            )
+            narr_speed_str = st.select_slider("読み上げ速度", options=_speed_strs, value="1.0x（標準）")
+            narr_speed = _speed_map[narr_speed_str]
             tts_rate = f"{int((narr_speed - 1) * 100):+d}%"
 
             # --- プレビュー ---
@@ -510,8 +510,8 @@ if uploaded_file is not None:
                     try:
                         prev_bytes = text_to_speech_bytes(edited_text, voice, tts_rate)
                         st.session_state["preview_audio"] = prev_bytes
-                    except RuntimeError as e:
-                        st.error(str(e))
+                    except Exception as e:
+                        st.error(f"プレビューエラー: {e}")
             if "preview_audio" in st.session_state:
                 st.audio(st.session_state["preview_audio"], format="audio/mpeg")
 
@@ -521,10 +521,8 @@ if uploaded_file is not None:
                 sub_font_name = st.selectbox("字幕フォント", list(font_options.keys()))
                 sub_font = font_options[sub_font_name]
                 sub_font_size = st.slider("文字サイズ", 16, 64, 28, key="font_sz")
-                sub_speed = st.select_slider(
-                    "字幕流し込み速度", options=_speed_opts,
-                    value=1.0, format_func=lambda v: _speed_labels[_speed_opts.index(v)]
-                )
+                sub_speed_str = st.select_slider("字幕流し込み速度", options=_speed_strs, value="1.0x（標準）")
+                sub_speed = _speed_map[sub_speed_str]
                 st.write("文字")
                 c1, c2 = st.columns(2)
                 text_color   = c1.color_picker("文字色", "#FFFFFF")
@@ -550,8 +548,8 @@ if uploaded_file is not None:
                     with st.spinner("Edge TTSで音声を合成中..."):
                         try:
                             audio_data = text_to_speech_bytes(edited_text, voice, tts_rate)
-                        except RuntimeError as e:
-                            st.error(str(e))
+                        except Exception as e:
+                            st.error(f"Edge TTS エラー: {e}")
                             st.stop()
 
                         if not audio_data:
@@ -587,8 +585,8 @@ if uploaded_file is not None:
                                               subtitle, sub_font,
                                               text_color, text_opacity,
                                               bg_color, bg_opacity, sub_font_size, sub_speed)
-                        except RuntimeError as e:
-                            st.error(str(e))
+                        except Exception as e:
+                            st.error(f"動画生成エラー: {e}")
                             st.stop()
 
                     with open(output_path, "rb") as f:
