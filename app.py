@@ -186,13 +186,13 @@ def generate_narrations(analysis: str) -> dict[str, str]:
     return narrations
 
 
-def text_to_speech_bytes(text: str, voice: str) -> bytes:
+def text_to_speech_bytes(text: str, voice: str, rate: str = "+0%") -> bytes:
     """edge_tts からオーディオバイト列を取得して返す（例外は RuntimeError で再送出）"""
     result: list = [None]
     error:  list = [None]
 
     async def _collect():
-        communicate = edge_tts.Communicate(text, voice)
+        communicate = edge_tts.Communicate(text, voice, rate=rate)
         chunks = b""
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
@@ -304,8 +304,8 @@ def build_drawtext_filter(segments: list[str], total_duration: float,
                           font_path: str,
                           text_color: str = "#FFFFFF", text_opacity: int = 100,
                           bg_color: str = "#000000", bg_opacity: int = 20,
-                          font_size: int = 28) -> str:
-    seg_dur = total_duration / max(len(segments), 1)
+                          font_size: int = 28, sub_speed: float = 1.0) -> str:
+    seg_dur = (total_duration / max(len(segments), 1)) / sub_speed
     box_pad = 8
 
     def to_ffcolor(hex_color: str, opacity: int) -> str:
@@ -346,7 +346,7 @@ def merge_audio_video(video_path: str, audio_path: str, output_path: str,
                       subtitle_text: str = "", subtitle_font: str = "",
                       text_color: str = "#FFFFFF", text_opacity: int = 100,
                       bg_color: str = "#000000", bg_opacity: int = 20,
-                      font_size: int = 28):
+                      font_size: int = 28, sub_speed: float = 1.0):
     vf_filters = []
 
     if subtitle_text:
@@ -355,7 +355,7 @@ def merge_audio_video(video_path: str, audio_path: str, output_path: str,
         font_path = resolve_font_path(subtitle_font)
         dt = build_drawtext_filter(
             segments, duration, font_path,
-            text_color, text_opacity, bg_color, bg_opacity, font_size
+            text_color, text_opacity, bg_color, bg_opacity, font_size, sub_speed
         )
         vf_filters.append(dt)
 
@@ -484,6 +484,10 @@ if uploaded_file is not None:
 
             st.divider()
             st.header("Step 3: 音声合成＆動画書き出し")
+
+            _speed_opts = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+            _speed_labels = ["0.5x", "0.75x", "1.0x (標準)", "1.25x", "1.5x", "1.75x", "2.0x"]
+
             voice_keys = list(VOICE_OPTIONS.keys())
             step3_voice = st.selectbox(
                 "ナレーター音声",
@@ -494,13 +498,33 @@ if uploaded_file is not None:
             st.session_state["selected_voice_name"] = step3_voice
             voice = VOICE_OPTIONS[step3_voice]
 
+            narr_speed = st.select_slider(
+                "読み上げ速度", options=_speed_opts,
+                value=1.0, format_func=lambda v: _speed_labels[_speed_opts.index(v)]
+            )
+            tts_rate = f"{int((narr_speed - 1) * 100):+d}%"
+
+            # --- プレビュー ---
+            if st.button("ナレーション音声をプレビュー再生"):
+                with st.spinner("音声を生成中..."):
+                    try:
+                        prev_bytes = text_to_speech_bytes(edited_text, voice, tts_rate)
+                        st.session_state["preview_audio"] = prev_bytes
+                    except RuntimeError as e:
+                        st.error(str(e))
+            if "preview_audio" in st.session_state:
+                st.audio(st.session_state["preview_audio"], format="audio/mpeg")
+
             show_subtitle = st.checkbox("字幕を表示する（テキストを動画に焼き込む）")
             if show_subtitle:
                 font_options = get_font_options()
                 sub_font_name = st.selectbox("字幕フォント", list(font_options.keys()))
                 sub_font = font_options[sub_font_name]
-                st.caption("※ 太字はフォントファイルに依存するため現在非対応")
                 sub_font_size = st.slider("文字サイズ", 16, 64, 28, key="font_sz")
+                sub_speed = st.select_slider(
+                    "字幕流し込み速度", options=_speed_opts,
+                    value=1.0, format_func=lambda v: _speed_labels[_speed_opts.index(v)]
+                )
                 st.write("文字")
                 c1, c2 = st.columns(2)
                 text_color   = c1.color_picker("文字色", "#FFFFFF")
@@ -512,6 +536,7 @@ if uploaded_file is not None:
             else:
                 sub_font = ""
                 sub_font_size = 28
+                sub_speed = 1.0
                 text_color, text_opacity = "#FFFFFF", 100
                 bg_color, bg_opacity = "#000000", 20
 
@@ -524,7 +549,7 @@ if uploaded_file is not None:
                     audio_path = os.path.join(out_dir, "narration.wav")
                     with st.spinner("Edge TTSで音声を合成中..."):
                         try:
-                            audio_data = text_to_speech_bytes(edited_text, voice)
+                            audio_data = text_to_speech_bytes(edited_text, voice, tts_rate)
                         except RuntimeError as e:
                             st.error(str(e))
                             st.stop()
@@ -561,7 +586,7 @@ if uploaded_file is not None:
                             merge_audio_video(orig_video, audio_path, output_path,
                                               subtitle, sub_font,
                                               text_color, text_opacity,
-                                              bg_color, bg_opacity, sub_font_size)
+                                              bg_color, bg_opacity, sub_font_size, sub_speed)
                         except RuntimeError as e:
                             st.error(str(e))
                             st.stop()
