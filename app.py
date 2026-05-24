@@ -98,7 +98,12 @@ def extract_frames(video_path: str, num_frames: int, output_dir: str) -> list[st
          "-of", "default=noprint_wrappers=1:nokey=1", video_path],
         capture_output=True, text=True
     )
-    duration = float(result.stdout.strip())
+    try:
+        duration = float(result.stdout.strip())
+    except (ValueError, TypeError):
+        raise RuntimeError(
+            f"動画の長さを取得できませんでした。対応形式（MP4/MOV/M4V）か確認してください。\n{result.stderr}"
+        )
     interval = duration / (num_frames + 1)
     output_pattern = os.path.join(output_dir, "frame_%03d.jpg")
 
@@ -194,7 +199,8 @@ def generate_narrations(analysis: str) -> dict[str, str]:
 
 def text_to_speech_bytes(text: str, voice: str = "ja-JP-Neural2-D",
                          speaking_rate: float = 1.0) -> bytes:
-    """Google Cloud TTS REST API で日本語音声を生成して MP3 バイト列を返す"""
+    """Google Cloud TTS REST API で日本語音声を生成して MP3 バイト列を返す。
+    5000文字制限を超える場合はチャンク分割してリクエストし MP3 を結合する。"""
     import requests
 
     if not google_tts_key:
@@ -204,21 +210,28 @@ def text_to_speech_bytes(text: str, voice: str = "ja-JP-Neural2-D",
         )
 
     url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={google_tts_key}"
-    payload = {
-        "input": {"text": text},
-        "voice": {"languageCode": "ja-JP", "name": voice},
-        "audioConfig": {
-            "audioEncoding": "MP3",
-            "speakingRate": speaking_rate,
-        },
-    }
-    resp = requests.post(url, json=payload, timeout=30)
-    if not resp.ok:
-        raise RuntimeError(f"Google TTS API エラー ({resp.status_code}): {resp.text[:300]}")
-    audio_b64 = resp.json().get("audioContent", "")
-    if not audio_b64:
-        raise RuntimeError("Google TTS から音声データを受け取れませんでした")
-    return base64.b64decode(audio_b64)
+
+    def _call(chunk: str) -> bytes:
+        payload = {
+            "input": {"text": chunk},
+            "voice": {"languageCode": "ja-JP", "name": voice},
+            "audioConfig": {"audioEncoding": "MP3", "speakingRate": speaking_rate},
+        }
+        resp = requests.post(url, json=payload, timeout=30)
+        if not resp.ok:
+            raise RuntimeError(f"Google TTS API エラー ({resp.status_code}): {resp.text[:300]}")
+        audio_b64 = resp.json().get("audioContent", "")
+        if not audio_b64:
+            raise RuntimeError("Google TTS から音声データを受け取れませんでした")
+        return base64.b64decode(audio_b64)
+
+    # 4500文字ずつに分割（APIの5000文字制限に安全マージンを取る）
+    CHUNK = 4500
+    if len(text) <= CHUNK:
+        return _call(text)
+
+    chunks = [text[i:i + CHUNK] for i in range(0, len(text), CHUNK)]
+    return b"".join(_call(c) for c in chunks)
 
 
 WINDOWS_FONTS = {
@@ -344,7 +357,11 @@ def build_drawtext_filter(segments: list[str], total_duration: float,
         return f"0x{r:02x}{g:02x}{b:02x}@{opacity/100:.2f}"
 
     def esc(text: str) -> str:
-        return text.replace("\\", "\\\\").replace("'", "\\'")
+        text = text.replace("\\", "\\\\")  # \ は最初に処理
+        text = text.replace("'", "\\'")     # ' → \'（オプション区切りと衝突）
+        text = text.replace("%", "%%")      # % → %%（drawtext の strftime 展開を防ぐ）
+        text = text.replace(":", "\\:")     # : → \:（フィルターオプション区切りと衝突）
+        return text
 
     text_col = to_ffcolor(text_color, text_opacity)
     box_col  = to_ffcolor(bg_color, bg_opacity)
