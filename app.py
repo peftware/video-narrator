@@ -30,6 +30,15 @@ NARRATION_STYLES = [
     "Vlog・日常動画風",
 ]
 
+VOICE_OPTIONS = {
+    "Neural2-D（女性・自然）":  "ja-JP-Neural2-D",
+    "Neural2-B（男性・自然）":  "ja-JP-Neural2-B",
+    "Neural2-C（男性・若い）":  "ja-JP-Neural2-C",
+    "WaveNet-A（女性）":        "ja-JP-Wavenet-A",
+    "WaveNet-B（男性）":        "ja-JP-Wavenet-B",
+    "Standard-A（女性・軽量）": "ja-JP-Standard-A",
+    "Standard-B（男性・軽量）": "ja-JP-Standard-B",
+}
 
 try:
     groq_api_key = st.secrets.get("GROQ_API_KEY")
@@ -37,6 +46,12 @@ except Exception:
     groq_api_key = None
 groq_api_key = groq_api_key or os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=groq_api_key)
+
+try:
+    google_tts_key = st.secrets.get("GOOGLE_TTS_API_KEY")
+except Exception:
+    google_tts_key = None
+google_tts_key = google_tts_key or os.getenv("GOOGLE_TTS_API_KEY")
 
 st.set_page_config(page_title="動画ナレーター自動生成", layout="centered")
 st.title("動画ナレーター自動生成")
@@ -54,13 +69,25 @@ button[kind="secondary"]:hover {
 </style>
 """, unsafe_allow_html=True)
 
+# 音声選択をセッション状態で管理
+if "selected_voice_name" not in st.session_state:
+    st.session_state["selected_voice_name"] = list(VOICE_OPTIONS.keys())[0]
+
 # --- 設定（折りたたみ） ---
 with st.expander("設定"):
     st.write("Groq API:", "✅" if groq_api_key else "❌")
-    st.write("音声合成:", "✅ Google TTS（キー不要）")
+    st.write("Google TTS:", "✅" if google_tts_key else "❌ GOOGLE_TTS_API_KEY 未設定")
     st.divider()
     frame_count = st.slider("抽出フレーム数", min_value=3, max_value=5, value=5,
                             help="Groq Vision APIの仕様上、最大5枚")
+    voice_keys = list(VOICE_OPTIONS.keys())
+    setting_voice = st.selectbox(
+        "ナレーター音声",
+        voice_keys,
+        index=voice_keys.index(st.session_state["selected_voice_name"]),
+        key="voice_setting"
+    )
+    st.session_state["selected_voice_name"] = setting_voice
 
 
 # --- ユーティリティ関数 ---
@@ -165,14 +192,33 @@ def generate_narrations(analysis: str) -> dict[str, str]:
     return narrations
 
 
-def text_to_speech_bytes(text: str) -> bytes:
-    """Google TTS (gTTS) で日本語音声を生成して MP3 バイト列を返す"""
-    from gtts import gTTS
-    import io
-    tts = gTTS(text=text, lang="ja")
-    buf = io.BytesIO()
-    tts.write_to_fp(buf)
-    return buf.getvalue()
+def text_to_speech_bytes(text: str, voice: str = "ja-JP-Neural2-D",
+                         speaking_rate: float = 1.0) -> bytes:
+    """Google Cloud TTS REST API で日本語音声を生成して MP3 バイト列を返す"""
+    import requests
+
+    if not google_tts_key:
+        raise RuntimeError(
+            "GOOGLE_TTS_API_KEY が設定されていません。"
+            "Streamlit Cloud の Settings → Secrets に追加してください。"
+        )
+
+    url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={google_tts_key}"
+    payload = {
+        "input": {"text": text},
+        "voice": {"languageCode": "ja-JP", "name": voice},
+        "audioConfig": {
+            "audioEncoding": "MP3",
+            "speakingRate": speaking_rate,
+        },
+    }
+    resp = requests.post(url, json=payload, timeout=30)
+    if not resp.ok:
+        raise RuntimeError(f"Google TTS API エラー ({resp.status_code}): {resp.text[:300]}")
+    audio_b64 = resp.json().get("audioContent", "")
+    if not audio_b64:
+        raise RuntimeError("Google TTS から音声データを受け取れませんでした")
+    return base64.b64decode(audio_b64)
 
 
 WINDOWS_FONTS = {
@@ -479,12 +525,20 @@ if uploaded_file is not None:
             _speed_vals  = [0.5,    0.75,     1.0,            1.25,    1.5,    1.75,    2.0   ]
             _speed_map   = dict(zip(_speed_strs, _speed_vals))
 
-            st.caption("音声: Google TTS（日本語）")
+            voice_keys = list(VOICE_OPTIONS.keys())
+            step3_voice = st.selectbox(
+                "ナレーター音声",
+                voice_keys,
+                index=voice_keys.index(st.session_state["selected_voice_name"]),
+                key="voice_step3"
+            )
+            st.session_state["selected_voice_name"] = step3_voice
+            voice = VOICE_OPTIONS[step3_voice]
 
             auto_sync = st.checkbox(
                 "動画の長さにナレーションを自動同期する（推奨）",
                 value=True,
-                help="ONにすると音声を動画の長さに合わせて伸縮します。OFFにすると生成した音声をそのまま使い、音声が終わった時点で動画もカットされます。"
+                help="ONにすると音声を動画の長さに合わせて atempo で伸縮します。OFFにすると読み上げ速度をそのまま使用し、音声終了時点で動画もカットされます。"
             )
             if not auto_sync:
                 narr_speed_str = st.select_slider("読み上げ速度", options=_speed_strs, value="1.0x（標準）")
@@ -496,7 +550,7 @@ if uploaded_file is not None:
             if st.button("ナレーション音声をプレビュー再生"):
                 with st.spinner("音声を生成中..."):
                     try:
-                        prev_bytes = text_to_speech_bytes(edited_text)
+                        prev_bytes = text_to_speech_bytes(edited_text, voice, narr_speed)
                         st.session_state["preview_audio"] = prev_bytes
                     except Exception as e:
                         st.error(f"プレビューエラー: {e}")
@@ -535,7 +589,10 @@ if uploaded_file is not None:
                     audio_path = os.path.join(out_dir, "narration.wav")
                     with st.spinner("Google TTSで音声を合成中..."):
                         try:
-                            audio_data = text_to_speech_bytes(edited_text)
+                            # auto_sync ON: speaking_rate=1.0（atempo で後調整）
+                            # auto_sync OFF: narr_speed を Google TTS に直接渡す（高品質）
+                            tts_rate = 1.0 if auto_sync else narr_speed
+                            audio_data = text_to_speech_bytes(edited_text, voice, tts_rate)
                         except Exception as e:
                             st.error(str(e))
                             st.stop()

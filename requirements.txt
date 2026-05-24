@@ -1,5 +1,5 @@
 streamlit
 groq
-gtts
+requests
 python-dotenv
 Pillow
