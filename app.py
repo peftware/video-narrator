@@ -187,18 +187,24 @@ def generate_narrations(analysis: str) -> dict[str, str]:
 
 
 def text_to_speech_bytes(text: str, voice: str, rate: str = "+0%") -> bytes:
-    """edge_tts からオーディオバイト列を取得して返す（失敗時は最大3回リトライ）"""
+    """edge_tts からオーディオバイト列を取得して返す（失敗時は最大5回リトライ）"""
     import time
 
-    async def _collect():
-        communicate = edge_tts.Communicate(text, voice, rate=rate)
+    async def _collect(r: str):
+        kwargs = {"rate": r} if r and r != "+0%" else {}
+        communicate = edge_tts.Communicate(
+            text, voice,
+            connect_timeout=15,
+            receive_timeout=90,
+            **kwargs
+        )
         chunks = b""
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
                 chunks += chunk["data"]
         return chunks
 
-    def _run_once():
+    def _run_once(r: str):
         result: list = [None]
         error:  list = [None]
 
@@ -206,7 +212,7 @@ def text_to_speech_bytes(text: str, voice: str, rate: str = "+0%") -> bytes:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                result[0] = loop.run_until_complete(_collect())
+                result[0] = loop.run_until_complete(_collect(r))
             except Exception as e:
                 error[0] = e
             finally:
@@ -220,17 +226,19 @@ def text_to_speech_bytes(text: str, voice: str, rate: str = "+0%") -> bytes:
         return result[0] or b""
 
     last_error = None
-    for attempt in range(3):
+    for attempt in range(5):
+        # 最終試行はrateなしで試す（Microsoft側のパラメータ拒否を回避）
+        r = rate if attempt < 4 else "+0%"
         try:
-            data = _run_once()
+            data = _run_once(r)
             if data:
                 return data
             last_error = Exception("音声データが空でした")
         except Exception as e:
             last_error = e
-            if attempt < 2:
-                time.sleep(2 ** attempt)  # 1s, 2s
-    raise RuntimeError(f"Edge TTS エラー（3回失敗）: {last_error}")
+        if attempt < 4:
+            time.sleep(min(2 ** attempt, 8))  # 1s, 2s, 4s, 8s
+    raise RuntimeError(f"音声合成に失敗しました（voice={voice}, rate={rate}）: {last_error}")
 
 
 WINDOWS_FONTS = {
@@ -602,7 +610,7 @@ if uploaded_file is not None:
                         try:
                             audio_data = text_to_speech_bytes(edited_text, voice, tts_rate)
                         except Exception as e:
-                            st.error(f"Edge TTS エラー: {e}")
+                            st.error(str(e))
                             st.stop()
 
                         if not audio_data:
