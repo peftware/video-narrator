@@ -186,22 +186,36 @@ def generate_narrations(analysis: str) -> dict[str, str]:
     return narrations
 
 
-def text_to_speech(text: str, voice: str, output_path: str):
-    async def _run():
-        communicate = edge_tts.Communicate(text, voice)
-        await communicate.save(output_path)
+def text_to_speech_bytes(text: str, voice: str) -> bytes:
+    """edge_tts からオーディオバイト列を取得して返す（例外は RuntimeError で再送出）"""
+    result: list = [None]
+    error:  list = [None]
 
-    def run_in_thread():
+    async def _collect():
+        communicate = edge_tts.Communicate(text, voice)
+        chunks = b""
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                chunks += chunk["data"]
+        return chunks
+
+    def _run():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(_run())
+            result[0] = loop.run_until_complete(_collect())
+        except Exception as e:
+            error[0] = e
         finally:
             loop.close()
 
-    thread = threading.Thread(target=run_in_thread)
+    thread = threading.Thread(target=_run)
     thread.start()
     thread.join()
+
+    if error[0] is not None:
+        raise RuntimeError(f"Edge TTS エラー: {error[0]}")
+    return result[0] or b""
 
 
 WINDOWS_FONTS = {
@@ -511,39 +525,36 @@ if uploaded_file is not None:
                     with open(orig_video, "wb") as f:
                         f.write(st.session_state["video_bytes"])
 
-                    raw_audio = os.path.join(out_dir, "narration_raw.mp3")
                     audio_path = os.path.join(out_dir, "narration.wav")
                     with st.spinner("Edge TTSで音声を合成中..."):
-                        text_to_speech(edited_text, voice, raw_audio)
-
-                        if not os.path.exists(raw_audio) or os.path.getsize(raw_audio) == 0:
-                            st.error("Edge TTSが音声ファイルを生成しませんでした")
+                        try:
+                            audio_data = text_to_speech_bytes(edited_text, voice)
+                        except RuntimeError as e:
+                            st.error(str(e))
                             st.stop()
 
-                        # マジックバイトで実際の形式を検出して変換
-                        with open(raw_audio, "rb") as _f:
-                            _hdr = _f.read(16)
-                        if _hdr[:4] == b'\x1aE\xdf\xa3':
-                            _fmt = "webm"
-                        elif _hdr[:4] == b'OggS':
-                            _fmt = "ogg"
-                        elif _hdr[:4] == b'RIFF':
-                            _fmt = "wav"
-                        elif _hdr[:3] == b'ID3' or (_hdr[0] == 0xff and _hdr[1] & 0xe0 == 0xe0):
-                            _fmt = "mp3"
-                        else:
-                            _fmt = ""
-                            st.warning(f"未知の音声形式（header: {_hdr[:8].hex()}）。自動検出で試みます。")
+                        if not audio_data:
+                            st.error("Edge TTSが音声データを生成しませんでした")
+                            st.stop()
 
-                        _fmt_args = ["-f", _fmt] if _fmt else []
+                        # バイト列を直接 FFmpeg の stdin にパイプして WAV に変換
                         conv = subprocess.run(
-                            [FFMPEG, "-y"] + _fmt_args + ["-i", raw_audio, "-ar", "44100", "-ac", "1", audio_path],
-                            capture_output=True
+                            [FFMPEG, "-y", "-f", "mp3", "-i", "pipe:0",
+                             "-ar", "44100", "-ac", "1", audio_path],
+                            input=audio_data, capture_output=True
                         )
                         if conv.returncode != 0 or not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+                            # mp3 ヒントが失敗した場合はフォーマット自動検出で再試行
+                            conv = subprocess.run(
+                                [FFMPEG, "-y", "-i", "pipe:0",
+                                 "-ar", "44100", "-ac", "1", audio_path],
+                                input=audio_data, capture_output=True
+                            )
+                        if conv.returncode != 0 or not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+                            hdr_hex = audio_data[:16].hex() if audio_data else "empty"
                             st.error(
-                                f"音声変換エラー（検出形式: {_fmt or '不明'}, header: {_hdr[:8].hex()}）:\n"
-                                f"{conv.stderr.decode(errors='replace')[-500:]}"
+                                f"音声変換エラー（header: {hdr_hex}）:\n"
+                                f"{conv.stderr.decode(errors='replace')[-400:]}"
                             )
                             st.stop()
 
