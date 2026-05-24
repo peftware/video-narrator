@@ -5,10 +5,7 @@ import tempfile
 import subprocess
 import glob
 import base64
-import asyncio
-import threading
 from groq import Groq
-import edge_tts
 
 load_dotenv()
 
@@ -187,57 +184,42 @@ def generate_narrations(analysis: str) -> dict[str, str]:
 
 
 def text_to_speech_bytes(text: str, voice: str, rate: str = "+0%") -> bytes:
-    """edge_tts からオーディオバイト列を取得して返す（失敗時は最大5回リトライ）"""
-    import time
-
-    async def _collect(r: str):
-        kwargs = {"rate": r} if r and r != "+0%" else {}
-        communicate = edge_tts.Communicate(
-            text, voice,
-            connect_timeout=15,
-            receive_timeout=90,
-            **kwargs
-        )
-        chunks = b""
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                chunks += chunk["data"]
-        return chunks
-
-    def _run_once(r: str):
-        result: list = [None]
-        error:  list = [None]
-
-        def _run():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                result[0] = loop.run_until_complete(_collect(r))
-            except Exception as e:
-                error[0] = e
-            finally:
-                loop.close()
-
-        t = threading.Thread(target=_run)
-        t.start()
-        t.join()
-        if error[0] is not None:
-            raise error[0]
-        return result[0] or b""
+    """edge_tts CLI をサブプロセスで呼び出して音声バイト列を返す。
+    asyncio/スレッドの衝突を避けるため Python -m edge_tts を直接実行する。"""
+    import sys, time
 
     last_error = None
     for attempt in range(5):
-        # 最終試行はrateなしで試す（Microsoft側のパラメータ拒否を回避）
-        r = rate if attempt < 4 else "+0%"
+        tmp_path = None
         try:
-            data = _run_once(r)
-            if data:
-                return data
-            last_error = Exception("音声データが空でした")
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+                tmp_path = tmp.name
+
+            cmd = [sys.executable, "-m", "edge_tts",
+                   "--voice", voice, "--text", text, "--write-media", tmp_path]
+            if rate and rate != "+0%":
+                cmd += ["--rate", rate]
+
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            if (proc.returncode == 0
+                    and os.path.exists(tmp_path)
+                    and os.path.getsize(tmp_path) > 0):
+                with open(tmp_path, "rb") as f:
+                    return f.read()
+            last_error = Exception(proc.stderr.strip() or "CLIが音声を生成しませんでした")
+        except subprocess.TimeoutExpired:
+            last_error = Exception("タイムアウト（90秒）")
         except Exception as e:
             last_error = e
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
         if attempt < 4:
-            time.sleep(min(2 ** attempt, 8))  # 1s, 2s, 4s, 8s
+            time.sleep(min(2 ** attempt, 8))
+
     raise RuntimeError(f"音声合成に失敗しました（voice={voice}, rate={rate}）: {last_error}")
 
 
