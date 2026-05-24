@@ -225,7 +225,10 @@ def get_audio_duration(audio_path: str) -> float:
          "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
         capture_output=True, text=True
     )
-    return float(result.stdout.strip())
+    out = result.stdout.strip()
+    if not out:
+        raise RuntimeError(f"音声ファイルの長さを取得できません。ffprobeエラー:\n{result.stderr}")
+    return float(out)
 
 
 def split_into_segments(text: str) -> list[str]:
@@ -512,10 +515,13 @@ if uploaded_file is not None:
                     audio_path = os.path.join(out_dir, "narration.wav")
                     with st.spinner("Edge TTSで音声を合成中..."):
                         text_to_speech(edited_text, voice, raw_audio)
-                        # WAVに変換してFFmpegが確実に読めるようにする
-                        subprocess.run([FFMPEG, "-y", "-i", raw_audio,
-                                        "-ar", "44100", "-ac", "1", audio_path],
-                                       capture_output=True)
+                        conv = subprocess.run(
+                            [FFMPEG, "-y", "-i", raw_audio, "-ar", "44100", "-ac", "1", audio_path],
+                            capture_output=True
+                        )
+                        if conv.returncode != 0 or not os.path.exists(audio_path):
+                            st.error(f"音声変換エラー:\n{conv.stderr.decode(errors='replace')}")
+                            st.stop()
 
                     output_path = os.path.join(out_dir, "output.mp4")
                     with st.spinner("FFmpegで動画を合成中..."):
