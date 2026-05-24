@@ -80,14 +80,6 @@ with st.expander("設定"):
     st.divider()
     frame_count = st.slider("抽出フレーム数", min_value=3, max_value=5, value=5,
                             help="Groq Vision APIの仕様上、最大5枚")
-    voice_keys = list(VOICE_OPTIONS.keys())
-    setting_voice = st.selectbox(
-        "ナレーター音声",
-        voice_keys,
-        index=voice_keys.index(st.session_state["selected_voice_name"]),
-        key="voice_setting"
-    )
-    st.session_state["selected_voice_name"] = setting_voice
 
 
 # --- ユーティリティ関数 ---
@@ -577,12 +569,19 @@ if uploaded_file is not None:
             else:
                 narr_speed = 1.0
 
+            # voice / pitch が変わったら古いプレビューを破棄
+            if (st.session_state.get("preview_voice") != voice
+                    or st.session_state.get("preview_pitch") != pitch):
+                st.session_state.pop("preview_audio", None)
+
             # --- プレビュー ---
             if st.button("ナレーション音声をプレビュー再生"):
                 with st.spinner("音声を生成中..."):
                     try:
                         prev_bytes = text_to_speech_bytes(edited_text, voice, narr_speed, pitch)
                         st.session_state["preview_audio"] = prev_bytes
+                        st.session_state["preview_voice"] = voice
+                        st.session_state["preview_pitch"] = pitch
                     except Exception as e:
                         st.error(f"プレビューエラー: {e}")
             if "preview_audio" in st.session_state:
