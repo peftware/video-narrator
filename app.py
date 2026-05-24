@@ -198,10 +198,11 @@ def generate_narrations(analysis: str) -> dict[str, str]:
 
 
 def text_to_speech_bytes(text: str, voice: str = "ja-JP-Neural2-D",
-                         speaking_rate: float = 1.0) -> bytes:
+                         speaking_rate: float = 1.0, pitch: int = 0) -> bytes:
     """Google Cloud TTS REST API で日本語音声を生成して MP3 バイト列を返す。
+    pitch != 0 のとき SSML <prosody> で音程を調整する。
     5000文字制限を超える場合はチャンク分割してリクエストし MP3 を結合する。"""
-    import requests
+    import requests, html as html_mod
 
     if not google_tts_key:
         raise RuntimeError(
@@ -211,9 +212,16 @@ def text_to_speech_bytes(text: str, voice: str = "ja-JP-Neural2-D",
 
     url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={google_tts_key}"
 
+    def _make_input(chunk: str) -> dict:
+        if pitch == 0:
+            return {"text": chunk}
+        pitch_str = f"{pitch:+d}st"
+        ssml = f'<speak><prosody pitch="{pitch_str}">{html_mod.escape(chunk)}</prosody></speak>'
+        return {"ssml": ssml}
+
     def _call(chunk: str) -> bytes:
         payload = {
-            "input": {"text": chunk},
+            "input": _make_input(chunk),
             "voice": {"languageCode": "ja-JP", "name": voice},
             "audioConfig": {"audioEncoding": "MP3", "speakingRate": speaking_rate},
         }
@@ -552,6 +560,12 @@ if uploaded_file is not None:
             st.session_state["selected_voice_name"] = step3_voice
             voice = VOICE_OPTIONS[step3_voice]
 
+            pitch = st.slider(
+                "ピッチ（音程）", min_value=-10, max_value=10, value=0, step=1,
+                format="%d半音",
+                help="0が標準。+で高く（明るい印象）、-で低く（落ち着いた印象）なります。"
+            )
+
             auto_sync = st.checkbox(
                 "動画の長さにナレーションを自動同期する（推奨）",
                 value=True,
@@ -567,7 +581,7 @@ if uploaded_file is not None:
             if st.button("ナレーション音声をプレビュー再生"):
                 with st.spinner("音声を生成中..."):
                     try:
-                        prev_bytes = text_to_speech_bytes(edited_text, voice, narr_speed)
+                        prev_bytes = text_to_speech_bytes(edited_text, voice, narr_speed, pitch)
                         st.session_state["preview_audio"] = prev_bytes
                     except Exception as e:
                         st.error(f"プレビューエラー: {e}")
@@ -609,7 +623,7 @@ if uploaded_file is not None:
                             # auto_sync ON: speaking_rate=1.0（atempo で後調整）
                             # auto_sync OFF: narr_speed を Google TTS に直接渡す（高品質）
                             tts_rate = 1.0 if auto_sync else narr_speed
-                            audio_data = text_to_speech_bytes(edited_text, voice, tts_rate)
+                            audio_data = text_to_speech_bytes(edited_text, voice, tts_rate, pitch)
                         except Exception as e:
                             st.error(str(e))
                             st.stop()
