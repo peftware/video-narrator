@@ -69,9 +69,9 @@ button[kind="secondary"]:hover {
 </style>
 """, unsafe_allow_html=True)
 
-# 音声選択をセッション状態で管理
-if "selected_voice_name" not in st.session_state:
-    st.session_state["selected_voice_name"] = list(VOICE_OPTIONS.keys())[0]
+# 音声選択をセッション状態で管理（key= のみで管理し index= との競合を避ける）
+if "voice_step3" not in st.session_state:
+    st.session_state["voice_step3"] = list(VOICE_OPTIONS.keys())[0]
 
 # --- 設定（折りたたみ） ---
 with st.expander("設定"):
@@ -546,10 +546,8 @@ if uploaded_file is not None:
             step3_voice = st.selectbox(
                 "ナレーター音声",
                 voice_keys,
-                index=voice_keys.index(st.session_state["selected_voice_name"]),
-                key="voice_step3"
+                key="voice_step3"  # index= を使わず key= だけで状態管理
             )
-            st.session_state["selected_voice_name"] = step3_voice
             voice = VOICE_OPTIONS[step3_voice]
 
             pitch = st.slider(
@@ -560,7 +558,7 @@ if uploaded_file is not None:
 
             auto_sync = st.checkbox(
                 "動画の長さにナレーションを自動同期する（推奨）",
-                value=True,
+                value=False,
                 help="ONにすると音声を動画の長さに合わせて atempo で伸縮します。OFFにすると読み上げ速度をそのまま使用し、音声終了時点で動画もカットされます。"
             )
             if not auto_sync:
@@ -568,8 +566,6 @@ if uploaded_file is not None:
                 narr_speed = _speed_map[narr_speed_str]
             else:
                 narr_speed = 1.0
-
-            st.caption(f"Voice ID: `{voice}`  Pitch: `{pitch:+d}st`")
 
             # voice / pitch が変わったら古いプレビューを破棄
             if (st.session_state.get("preview_voice") != voice
