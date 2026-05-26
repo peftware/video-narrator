@@ -405,7 +405,8 @@ def merge_audio_video(video_path: str, audio_path: str, output_path: str,
             segments, duration, font_path,
             text_color, text_opacity, bg_color, bg_opacity, font_size, sub_speed
         )
-        vf_filters.append(dt)
+        if dt:
+            vf_filters.append(dt)
 
     cmd = [FFMPEG, "-i", video_path, "-i", audio_path]
     if vf_filters:
@@ -441,6 +442,7 @@ if uploaded_file is not None:
         st.session_state.pop("video_analysis", None)
         st.session_state.pop("narrations", None)
         st.session_state.pop("output_video", None)
+        st.session_state.pop("preview_audio", None)
 
     st.success(f"アップロード完了: {uploaded_file.name}")
 
@@ -644,33 +646,30 @@ if uploaded_file is not None:
                             st.error(f"音声変換エラー:\n{conv.stderr.decode(errors='replace')[-400:]}")
                             st.stop()
 
-                    # 音声の速度調整（auto_sync: 動画長に合わせる / OFF: narr_speed を適用）
+                    # auto_sync ON のときだけ atempo で動画長に合わせる
+                    # auto_sync OFF は TTS の speaking_rate で速度調整済みなので atempo 不要
                     video_dur = 0.0
-                    with st.spinner("音声を調整中..."):
-                        try:
-                            audio_dur = get_audio_duration(audio_path)
-                            if auto_sync:
+                    if auto_sync:
+                        with st.spinner("動画の長さに合わせて音声を調整中..."):
+                            try:
+                                audio_dur = get_audio_duration(audio_path)
                                 video_dur = get_video_duration(orig_video)
-                                # 正しい ratio: audio_dur / video_dur（遅くする＝0.5以下、速くする＝2.0以上）
                                 ratio = audio_dur / video_dur if video_dur > 0 else 1.0
-                            else:
-                                ratio = narr_speed  # ユーザー指定速度をそのまま atempo に
-
-                            if abs(ratio - 1.0) > 0.01:
-                                atempo_f = build_atempo_filter(ratio)
-                                stretched_path = os.path.join(out_dir, "narration_adjusted.wav")
-                                res = subprocess.run(
-                                    [FFMPEG, "-y", "-i", audio_path, "-af", atempo_f, stretched_path],
-                                    capture_output=True, text=True
-                                )
-                                if res.returncode == 0 and os.path.getsize(stretched_path) > 0:
-                                    audio_path = stretched_path
-                                else:
-                                    st.warning("速度調整に失敗しました。元の長さで続行します。")
-                                    video_dur = 0.0
-                        except Exception as e:
-                            st.warning(f"速度調整エラー（元の長さで続行）: {e}")
-                            video_dur = 0.0
+                                if abs(ratio - 1.0) > 0.01:
+                                    atempo_f = build_atempo_filter(ratio)
+                                    stretched_path = os.path.join(out_dir, "narration_adjusted.wav")
+                                    res = subprocess.run(
+                                        [FFMPEG, "-y", "-i", audio_path, "-af", atempo_f, stretched_path],
+                                        capture_output=True, text=True
+                                    )
+                                    if res.returncode == 0 and os.path.getsize(stretched_path) > 0:
+                                        audio_path = stretched_path
+                                    else:
+                                        st.warning("速度調整に失敗しました。元の長さで続行します。")
+                                        video_dur = 0.0
+                            except Exception as e:
+                                st.warning(f"速度調整エラー（元の長さで続行）: {e}")
+                                video_dur = 0.0
 
                     output_path = os.path.join(out_dir, "output.mp4")
                     with st.spinner("FFmpegで動画を合成中..."):
